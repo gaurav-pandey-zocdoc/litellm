@@ -569,7 +569,8 @@ class SlackAlerting(CustomBatchLogger):
 
         # send alert
         if event is not None and user_info.event_group is not None:
-            _cache_key: Final = f"budget_alerts:{event}:{_id}"
+            dedup_event: Final = self._get_budget_alert_dedup_event(event=event, user_info=user_info)
+            _cache_key: Final = f"budget_alerts:{type}:{dedup_event}:{_id}"
             result: Final = await _cache.async_get_cache(key=_cache_key)
             if result is None:
                 webhook_event = WebhookEvent(
@@ -638,6 +639,20 @@ class SlackAlerting(CustomBatchLogger):
                 event_message += "15% Threshold Crossed"
 
         return event, event_message
+
+    def _get_budget_alert_dedup_event(
+        self,
+        event: Literal["budget_crossed", "threshold_crossed", "soft_budget_crossed", "projected_limit_exceeded"],
+        user_info: CallInfo,
+    ) -> str:
+        """The 5% and 15% max budget alerts share the `threshold_crossed` event, so each needs its own dedup key"""
+        if event != "threshold_crossed":
+            return event
+
+        percent_left: Final = self._get_percent_of_max_budget_left(user_info=user_info)
+        if percent_left <= SLACK_ALERTING_THRESHOLD_5_PERCENT:
+            return "5_percent_remaining"
+        return "15_percent_remaining"
 
     def _get_percent_of_max_budget_left(self, user_info: CallInfo) -> float:
         """

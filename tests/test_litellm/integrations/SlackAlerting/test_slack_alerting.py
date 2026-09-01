@@ -238,6 +238,67 @@ class TestSlackAlerting(unittest.TestCase):
         self.assertEqual(parsed_data["provider_region_id"], "vertex_aius-east1")
 
 
+def _budget_alerting_with_mocked_send_alert() -> SlackAlerting:
+    slack_alerting: Final = SlackAlerting(
+        alerting=["slack"],
+        alert_types=["budget_alerts"],
+        internal_usage_cache=DualCache(),
+    )
+    slack_alerting.send_alert = AsyncMock()
+    return slack_alerting
+
+
+@pytest.mark.asyncio
+async def test_budget_alerts_deduplicate_each_threshold_independently():
+    slack_alerting: Final = _budget_alerting_with_mocked_send_alert()
+
+    for spend in (85.0, 90.0, 95.0, 99.0, 100.0, 101.0):
+        await slack_alerting.budget_alerts(
+            type="user_budget",
+            user_info=CallInfo(
+                spend=spend,
+                max_budget=100.0,
+                token="token-1",
+                user_id="user-1",
+                event_group=Litellm_EntityType.USER,
+            ),
+        )
+
+    assert slack_alerting.send_alert.await_count == 3
+    alert_messages: Final = tuple(call.kwargs["message"] for call in slack_alerting.send_alert.await_args_list)
+    assert "15% Threshold Crossed" in alert_messages[0]
+    assert "5% Threshold Crossed" in alert_messages[1]
+    assert "Budget Crossed" in alert_messages[2]
+
+
+@pytest.mark.asyncio
+async def test_budget_alerts_deduplicate_each_budget_type_independently():
+    slack_alerting: Final = _budget_alerting_with_mocked_send_alert()
+
+    await slack_alerting.budget_alerts(
+        type="user_budget",
+        user_info=CallInfo(
+            spend=85.0,
+            max_budget=100.0,
+            token="token-1",
+            user_id="shared-id",
+            event_group=Litellm_EntityType.USER,
+        ),
+    )
+    await slack_alerting.budget_alerts(
+        type="team_budget",
+        user_info=CallInfo(
+            spend=85.0,
+            max_budget=100.0,
+            token="token-1",
+            team_id="shared-id",
+            event_group=Litellm_EntityType.TEAM,
+        ),
+    )
+
+    assert slack_alerting.send_alert.await_count == 2
+
+
 _REPORT_SENT_KEY: Final = SlackAlertingCacheKeys.report_sent_key.value
 _DAILY_REPORT_FREQUENCY: Final = 900
 
